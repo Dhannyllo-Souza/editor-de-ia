@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Editor de Mídia IA</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <script type="importmap">
+    {
+      "imports": {
+        "@imgly/background-removal": "https://cdn.jsdelivr.net/npm/@imgly/background-removal/dist/browser.mjs",
+        "@tensorflow/tfjs": "https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.17.0/dist/tf.es2017.min.js",
+        "@tensorflow-models/coco-ssd": "https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.es2017.min.js"
+      }
+    }
+    </script>
+</head>
+<body>
+    <div id="editor-container">
+        <header id="main-header">
+            <h1><i class="fa-solid fa-wand-magic-sparkles"></i> Editor de Mídia IA</h1>
+        </header>
+        
+        <aside id="assets-panel">
+            <h2>Mídia</h2>
+            <div class="panel-content">
+                <p>Envie imagens, vídeos ou áudios.</p>
+                <label for="upload-input" class="custom-file-upload">
+                    <i class="fa-solid fa-upload"></i> Escolher Arquivos
+                </label>
+                <input type="file" id="upload-input" accept="image/*,video/*,audio/*" multiple>
+                <div id="media-library">
+                    <p class="placeholder-text">Sua mídia aparecerá aqui.</p>
+                </div>
+            </div>
+        </aside>
+
+        <aside id="tools-panel">
+            <h2>Ferramentas</h2>
+            <div class="panel-content">
+                <div id="tool-controls">
+                    <p class="placeholder-text">Selecione uma imagem para ver as ferramentas de edição.</p>
+                </div>
+            </div>
+        </aside>
+
+        <main id="preview-panel">
+            <div id="video-container" style="position: relative; width:100%; height:100%; display:flex; justify-content:center; align-items:center;">
+                <video id="video-preview" style="display: none; max-width:100%; max-height:100%;"></video>
+                <canvas id="canvas"></canvas>
+                <div id="subtitle-overlay"></div>
+            </div>
+            <div id="canvas-placeholder" class="visible">
+                <i class="fa-solid fa-photo-film"></i>
+                <p>A pré-visualização aparecerá aqui</p>
+                <span>Envie um arquivo para começar</span>
+            </div>
+            <div id="loader" class="hidden">
+                <div class="spinner"></div>
+                <p>Processando com IA...</p>
+            </div>
+        </main>
+
+        <footer id="timeline-panel">
+            <div id="timeline-controls">
+                <button id="play-pause-btn"><i class="fa-solid fa-play"></i></button>
+                <span id="time-display">00:00.0 / 00:00.0</span>
+                <div class="zoom-controls">
+                    <i class="fa-solid fa-magnifying-glass-minus"></i>
+                    <input type="range" id="zoom-slider" min="10" max="200" value="50">
+                    <i class="fa-solid fa-magnifying-glass-plus"></i>
+                </div>
+            </div>
+            <div id="timeline-container">
+                <div id="timeline-playhead"></div>
+                <div id="timeline-tracks">
+                    <!-- Tracks will be added here by JS -->
+                    <div class="timeline-track" data-track-id="v1">
+                        <div class="timeline-placeholder">
+                            <i class="fa-solid fa-video"></i>
+                            <span>Trilha de Vídeo</span>
+                        </div>
+                    </div>
+                    <div class="timeline-track subtitle-track" data-track-id="s1">
+                        <div class="timeline-placeholder">
+                            <i class="fa-solid fa-closed-captioning"></i>
+                            <span>Trilha de Legendas</span>
+                        </div>
+                    </div>
+                     <div class="timeline-track" data-track-id="a1">
+                        <div class="timeline-placeholder">
+                            <i class="fa-solid fa-waveform"></i>
+                            <span>Trilha de Áudio</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </footer>
+    </div>
+
+    <script type="module" src="script.js"></script>
+</body>
+</html>
