@@ -13,12 +13,16 @@ document.addEventListener('DOMContentLoaded', () => {
     const previewPanel = document.getElementById('preview-panel');
     const loader = document.getElementById('loader');
     const videoPreview = document.getElementById('video-preview');
+    const timelineContainer = document.getElementById('timeline-container');
     const timelineTracks = document.getElementById('timeline-tracks');
     const timelinePlayhead = document.getElementById('timeline-playhead');
     const playPauseBtn = document.getElementById('play-pause-btn');
     const timeDisplay = document.getElementById('time-display');
     const subtitleOverlay = document.getElementById('subtitle-overlay');
     const zoomSlider = document.getElementById('zoom-slider');
+    const exportModal = document.getElementById('export-modal');
+    const cancelExportBtn = document.getElementById('cancel-export-btn');
+    const confirmExportBtn = document.getElementById('confirm-export-btn');
 
     // AI Model State
     let objectDetectionModel = null;
@@ -45,7 +49,8 @@ document.addEventListener('DOMContentLoaded', () => {
              filter: 'none',
              memeText: { top: '', bottom: '' },
              detectedObjects: [], // For object detection results
-        }
+        },
+        dragState: null, // For timeline drag-and-drop
     };
 
     // --- AI Model Loading ---
@@ -69,6 +74,13 @@ document.addEventListener('DOMContentLoaded', () => {
     uploadInput.addEventListener('change', handleFileUpload);
     playPauseBtn.addEventListener('click', togglePlayback);
     videoPreview.addEventListener('timeupdate', updateTimelineFromVideo);
+    videoPreview.addEventListener('loadedmetadata', () => {
+        // When video metadata is loaded, update timeline if duration changed
+        const videoTrack = editorState.timeline.tracks.find(t => t.type === 'video');
+        if (videoTrack.clips.length > 0) {
+            updateTimeline();
+        }
+    });
     videoPreview.addEventListener('ended', () => {
         editorState.timeline.isPlaying = false;
         updatePlaybackUI();
@@ -79,18 +91,25 @@ document.addEventListener('DOMContentLoaded', () => {
     window.addEventListener('resize', redrawCanvas);
 
     timelineContainer.addEventListener('mousedown', handleTimelineInteraction);
+    timelineContainer.addEventListener('dragover', handleTimelineDragOver);
+    timelineContainer.addEventListener('drop', handleTimelineDrop);
+    timelineContainer.addEventListener('dragleave', e => {
+        document.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
+    });
     zoomSlider.addEventListener('input', handleZoom);
+    cancelExportBtn.addEventListener('click', () => exportModal.classList.add('hidden'));
+    confirmExportBtn.addEventListener('click', handleConfirmExport);
 
     function handleTimelineInteraction(e) {
-        if (e.target.classList.contains('timeline-clip')) return; // Don't seek when clicking clips
+        if (e.target.classList.contains('timeline-clip') || e.target.classList.contains('clip-handle')) return;
 
         const timelineRect = timelineContainer.getBoundingClientRect();
-        const startX = e.clientX - timelineRect.left;
+        const startX = e.clientX - timelineRect.left + timelineContainer.scrollLeft;
         
         seek(startX);
 
         const onMouseMove = (moveEvent) => {
-            const moveX = moveEvent.clientX - timelineRect.left;
+            const moveX = moveEvent.clientX - timelineRect.left + timelineContainer.scrollLeft;
             seek(moveX);
         };
 
@@ -151,14 +170,7 @@ document.addEventListener('DOMContentLoaded', () => {
         } else if (id === 'ai-auto-captions-btn') {
             generateAutoCaptions();
         } else if (id === 'download-btn') {
-            if (editorState.imageState.currentImage && !editorState.selectedClip) {
-                downloadImage();
-            } else if(editorState.selectedClip || videoPreview.src) {
-                exportVideo();
-            }
-            else {
-                alert("Nenhuma mídia selecionada para exportar.");
-            }
+            openExportModal();
         }
     }
     
@@ -181,6 +193,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (media.type === 'video') {
                      videoPreview.volume = target.value / 100;
                 }
+            }
+        } else if (action === 'speed-control') {
+            if (editorState.selectedClip) {
+                videoPreview.playbackRate = target.value;
+                document.getElementById('speed-value').textContent = `${target.value}x`;
             }
         }
     }
@@ -211,7 +228,11 @@ document.addEventListener('DOMContentLoaded', () => {
                          editorState.media.push(media);
                          renderMediaLibrary();
                          // Automatically add first video to timeline
-                         if (media.type === 'video' && editorState.timeline.tracks[0].clips.length === 0) {
+                         if (media.type === 'video' && editorState.timeline.tracks.find(t=>t.type==='video').clips.length === 0) {
+                            addClipToTimeline(media);
+                         }
+                         // Automatically add first audio to timeline
+                         if (media.type === 'audio' && editorState.timeline.tracks.find(t=>t.type==='audio').clips.length === 0) {
                             addClipToTimeline(media);
                          }
                      };
@@ -259,12 +280,7 @@ document.addEventListener('DOMContentLoaded', () => {
             `;
 
             el.addEventListener('click', () => {
-                if (media.type === 'video' || media.type === 'audio') {
-                    addClipToTimeline(media);
-                } else if (media.type === 'image') {
-                    // Show image in preview when clicked in library
-                    selectImageForPreview(media);
-                }
+                addClipToTimeline(media);
             });
 
             mediaLibrary.appendChild(el);
@@ -280,13 +296,13 @@ document.addEventListener('DOMContentLoaded', () => {
             editorState.imageState.filter = 'none';
             editorState.imageState.memeText = { top: '', bottom: '' };
             editorState.imageState.detectedObjects = [];
-            editorState.selectedClip = null; // Deselect any timeline clip
+            // Do not deselect clip if we are selecting an image from the timeline
+            // editorState.selectedClip = null; 
 
             // Show canvas and hide video/placeholder
             videoPreview.style.display = 'none';
             videoPreview.pause();
-            videoPreview.src = '';
-
+            
             canvas.style.display = 'block';
             canvasPlaceholder.classList.remove('visible');
 
@@ -325,6 +341,7 @@ document.addEventListener('DOMContentLoaded', () => {
             id: `clip-${Date.now()}`,
             mediaId: media.id,
             start: startTime,
+            end: startTime + (media.duration || 5),
             duration: media.duration || 5, // Default 5s for images
             trackId: track.id,
         };
@@ -334,16 +351,21 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function updateTimeline() {
-        const videoTrack = editorState.timeline.tracks[0];
+        const videoTrack = editorState.timeline.tracks.find(t => t.type === 'video');
+        if (!videoTrack) return;
+        
         editorState.timeline.duration = videoTrack.clips.reduce((max, clip) => Math.max(max, clip.start + clip.duration), 0);
         
         if (videoTrack.clips.length > 0) {
             const firstClipMedia = editorState.media.find(m => m.id === videoTrack.clips[0].mediaId);
-            if (firstClipMedia && videoPreview.src !== firstClipMedia.src) {
+            if (firstClipMedia && videoPreview.src !== firstClipMedia.src && firstClipMedia.type === 'video') {
                 videoPreview.src = firstClipMedia.src;
                 videoPreview.style.display = 'block';
                 canvas.style.display = 'none';
                 canvasPlaceholder.classList.remove('visible');
+            } else if (firstClipMedia && firstClipMedia.type === 'image') {
+                // If the first clip is an image, show it
+                selectImageForPreview(firstClipMedia);
             }
         } else if (!editorState.imageState.currentImage) { // Only hide if no image is being previewed
              videoPreview.style.display = 'none';
@@ -363,6 +385,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const trackEl = document.createElement('div');
             trackEl.className = 'timeline-track';
             trackEl.dataset.trackId = track.id;
+            trackEl.dataset.trackType = track.type;
             
             if (track.type === 'subtitle') {
                 trackEl.classList.add('subtitle-track');
@@ -378,11 +401,25 @@ document.addEventListener('DOMContentLoaded', () => {
                 clipEl.style.width = `${clip.duration * editorState.timeline.zoom}px`;
                 clipEl.textContent = media.name;
                 clipEl.dataset.clipId = clip.id;
+                clipEl.draggable = true;
+
+                clipEl.addEventListener('dragstart', e => handleClipDragStart(e, clip));
                 
-                clipEl.addEventListener('click', () => {
-                    editorState.selectedClip = clip;
-                    showToolsForClip(clip);
+                clipEl.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    selectClip(clip);
                 });
+
+                // Add resize handles
+                const leftHandle = document.createElement('div');
+                leftHandle.className = 'clip-handle left';
+                leftHandle.addEventListener('mousedown', e => initResize(e, clip, 'left'));
+                clipEl.appendChild(leftHandle);
+
+                const rightHandle = document.createElement('div');
+                rightHandle.className = 'clip-handle right';
+                rightHandle.addEventListener('mousedown', e => initResize(e, clip, 'right'));
+                clipEl.appendChild(rightHandle);
 
                 trackEl.appendChild(clipEl);
             });
@@ -398,7 +435,18 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
+    function selectClip(clip) {
+        editorState.selectedClip = clip;
+        showToolsForClip(clip);
+        
+        // Update selection visual
+        document.querySelectorAll('.timeline-clip').forEach(el => {
+            el.classList.toggle('selected-clip', el.dataset.clipId === clip.id);
+        });
+    }
+
     function togglePlayback() {
+        if(editorState.timeline.duration === 0) return;
         editorState.timeline.isPlaying = !editorState.timeline.isPlaying;
         if (editorState.timeline.isPlaying) {
             videoPreview.play();
@@ -466,6 +514,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 <h3><i class="fa-solid fa-sliders"></i> Controles de Clipe</h3>
                 <label for="volume-control">Volume:</label>
                 <input type="range" id="volume-control" data-action="volume-control" min="0" max="100" value="${videoPreview.volume * 100}">
+                <label for="speed-control">Velocidade: <span id="speed-value">${videoPreview.playbackRate}x</span></label>
+                <input type="range" id="speed-control" data-action="speed-control" min="0.25" max="2" step="0.25" value="${videoPreview.playbackRate}">
             </div>
             <div class="tool-section">
                 <h3><i class="fa-solid fa-scissors"></i> Edição de Vídeo</h3>
@@ -490,7 +540,7 @@ document.addEventListener('DOMContentLoaded', () => {
             <div class="tool-section">
                 <h3><i class="fa-solid fa-sliders"></i> Edição de Áudio</h3>
                 <button class="tool-btn"><i class="fa-solid fa-volume-high"></i> Volume</button>
-                <button class="tool-btn"><i class="fa-solid fa-wave-square"></i> Fade In/Out</button>
+                <button class="tool-btn"><i class="fa-solid fa-waveform"></i> Fade In/Out</button>
             </div>
              <div class="tool-section">
                 <h3><i class="fa-solid fa-robot"></i> Ferramentas IA (Áudio)</h3>
@@ -559,6 +609,9 @@ document.addEventListener('DOMContentLoaded', () => {
         
         canvas.width = dimensions.width;
         canvas.height = dimensions.height;
+
+        // If canvas is not visible, don't draw
+        if (canvas.style.display === 'none') return;
         
         ctx.clearRect(0, 0, canvas.width, canvas.height);
         ctx.filter = filter;
@@ -782,17 +835,162 @@ document.addEventListener('DOMContentLoaded', () => {
                 const videoTrack = editorState.timeline.tracks.find(t => t.type === 'video');
                 if (videoTrack.clips.length > 0) {
                     const firstClipMedia = editorState.media.find(m => m.id === videoTrack.clips[0].mediaId);
-                    if (firstClipMedia) {
+                    if (firstClipMedia && firstClipMedia.type === 'video') {
                         const link = document.createElement('a');
                         link.href = firstClipMedia.src;
                         link.download = `exported-video-${Date.now()}.mp4`;
                         link.click();
+                    } else {
+                        alert('A exportação de vídeos compostos por imagens ainda não é suportada.');
                     }
                 } else {
                     alert('Nenhum clipe de vídeo na linha do tempo para exportar.');
                 }
             }, 3000);
         }, 1500);
+    }
+
+    // --- Timeline Interaction Functions ---
+    function handleClipDragStart(e, clip) {
+        e.dataTransfer.effectAllowed = 'move';
+        editorState.dragState = { clip };
+    }
+
+    function handleTimelineDragOver(e) {
+        e.preventDefault();
+        const targetTrackEl = e.target.closest('.timeline-track');
+        if (!targetTrackEl) return;
+
+        document.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
+        targetTrackEl.classList.add('drag-over');
+    }
+
+    function handleTimelineDrop(e) {
+        e.preventDefault();
+        document.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
+        const { clip } = editorState.dragState;
+        if (!clip) return;
+
+        const targetTrackEl = e.target.closest('.timeline-track');
+        if (!targetTrackEl) return;
+
+        const originalTrack = editorState.timeline.tracks.find(t => t.id === clip.trackId);
+        const newTrack = editorState.timeline.tracks.find(t => t.id === targetTrackEl.dataset.trackId);
+        const media = editorState.media.find(m => m.id === clip.mediaId);
+        const mediaType = media.type === 'image' ? 'video' : media.type;
+        
+        if (newTrack.type !== mediaType) {
+            alert(`Não é possível mover um clipe de ${media.type} para uma trilha de ${newTrack.type}.`);
+            return;
+        }
+
+        const timelineRect = timelineContainer.getBoundingClientRect();
+        const dropX = e.clientX - timelineRect.left + timelineContainer.scrollLeft;
+        const newStartTime = Math.max(0, dropX / editorState.timeline.zoom);
+        
+        // Remove from old track
+        const clipIndex = originalTrack.clips.findIndex(c => c.id === clip.id);
+        originalTrack.clips.splice(clipIndex, 1);
+        
+        // Update clip and add to new track
+        clip.start = newStartTime;
+        clip.trackId = newTrack.id;
+        newTrack.clips.push(clip);
+        
+        updateTimeline();
+        renderTimeline();
+        editorState.dragState = null;
+    }
+
+    function initResize(e, clip, edge) {
+        e.stopPropagation();
+        const startX = e.clientX;
+        const startWidth = parseFloat(document.querySelector(`[data-clip-id="${clip.id}"]`).style.width);
+        const startLeft = parseFloat(document.querySelector(`[data-clip-id="${clip.id}"]`).style.left);
+        const pixelsPerSecond = editorState.timeline.zoom;
+
+        function onMouseMove(moveEvent) {
+            const dx = moveEvent.clientX - startX;
+            if (edge === 'right') {
+                const newWidth = startWidth + dx;
+                const newDuration = Math.max(0.1, newWidth / pixelsPerSecond);
+                clip.duration = newDuration;
+            } else if (edge === 'left') {
+                const newLeft = startLeft + dx;
+                const newWidth = startWidth - dx;
+                if(newWidth > 10) { // minimum width
+                    const newStartTime = Math.max(0, newLeft / pixelsPerSecond);
+                    const durationChange = clip.start - newStartTime;
+                    clip.start = newStartTime;
+                    clip.duration += durationChange;
+                }
+            }
+            updateTimeline();
+            renderTimeline();
+        }
+
+        function onMouseUp() {
+            document.removeEventListener('mousemove', onMouseMove);
+            document.removeEventListener('mouseup', onMouseUp);
+        }
+
+        document.addEventListener('mousemove', onMouseMove);
+        document.addEventListener('mouseup', onMouseUp);
+    }
+    
+    // --- Export Modal ---
+    function openExportModal() {
+        const optionsContainer = document.getElementById('export-options');
+        let isImage = editorState.imageState.currentImage && !editorState.selectedClip?.mediaId;
+        const videoTrack = editorState.timeline.tracks.find(t => t.type === 'video');
+        let hasVideo = videoTrack && videoTrack.clips.some(c => editorState.media.find(m => m.id === c.mediaId)?.type === 'video');
+
+        if(editorState.selectedClip) {
+            const media = editorState.media.find(m => m.id === editorState.selectedClip.mediaId);
+            if(media.type === 'image') isImage = true;
+        }
+
+        if (isImage) {
+            optionsContainer.innerHTML = `
+                <div class="form-group">
+                    <label for="export-filename">Nome do Arquivo:</label>
+                    <input type="text" id="export-filename" value="edited-image">
+                </div>
+                <div class="form-group">
+                    <label for="export-format">Formato:</label>
+                    <select id="export-format">
+                        <option value="image/png">PNG</option>
+                        <option value="image/jpeg">JPEG</option>
+                    </select>
+                </div>
+            `;
+        } else if (hasVideo || (videoTrack && videoTrack.clips.length > 0)) {
+            optionsContainer.innerHTML = `
+                 <div class="form-group">
+                    <label for="export-filename">Nome do Arquivo:</label>
+                    <input type="text" id="export-filename" value="exported-video">
+                </div>
+                <div class="form-group">
+                    <label>Formato:</label>
+                    <p>MP4 (Simulação)</p>
+                </div>
+            `;
+        } else {
+            alert("Nenhuma mídia para exportar. Adicione um clipe à linha do tempo ou selecione uma imagem.");
+            return;
+        }
+        exportModal.classList.remove('hidden');
+    }
+
+    function handleConfirmExport() {
+        exportModal.classList.add('hidden');
+        if (editorState.imageState.currentImage && !editorState.selectedClip) {
+            downloadImage();
+        } else if (editorState.timeline.duration > 0) {
+            exportVideo();
+        } else {
+             alert("Nada para exportar.");
+        }
     }
 
     // Initial UI setup
